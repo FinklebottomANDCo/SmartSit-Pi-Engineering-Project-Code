@@ -1,0 +1,85 @@
+// ------------ Pin Definitions ------------
+const int MOTOR_PINS[] = {18, 19, 21, 22};   // you said 18 motor outputs—adjust list as needed
+const int NUM_MOTORS = sizeof(MOTOR_PINS) / sizeof(MOTOR_PINS[0]);
+
+const int ALARM_PIN = 5;                     // speaker / alarm
+const int SEAT_PIN = 15;                     // seat sensor input (HIGH = occupied)
+
+// ------------ Timings ------------
+const unsigned long SIT_THRESHOLD = 25UL * 60UL * 1000UL;  // 25 minutes
+const unsigned long ALERT_DURATION = 10UL * 1000UL;        // 10 seconds
+
+bool running = true;
+
+// ---------------------------------------------------------
+void setup() {
+  // Initialize serial (optional)
+  Serial.begin(115200);
+
+  // Set motor & alarm pins as OUTPUT
+  for (int i = 0; i < NUM_MOTORS; i++) {
+    pinMode(MOTOR_PINS[i], OUTPUT);
+    digitalWrite(MOTOR_PINS[i], LOW);
+  }
+
+  pinMode(ALARM_PIN, OUTPUT);
+  digitalWrite(ALARM_PIN, LOW);
+
+  // Seat sensor as INPUT
+  pinMode(SEAT_PIN, INPUT);
+
+  Serial.println("System Ready.");
+}
+
+// ---------------------------------------------------------
+void loop() {
+  if (!running) return;
+
+  // -------- WAIT UNTIL SOMEONE SITS --------
+  Serial.println("Waiting for someone to sit...");
+  while (digitalRead(SEAT_PIN) == LOW) {
+    delay(100);
+  }
+
+  Serial.println("Seat occupied — starting timer.");
+  unsigned long startTime = millis();
+
+  // -------- WHILE SEATED (count time) --------
+  while (digitalRead(SEAT_PIN) == HIGH) {
+    unsigned long elapsed = millis() - startTime;
+
+    // Check time threshold
+    if (elapsed >= SIT_THRESHOLD) {
+      Serial.println("Threshold exceeded! Triggering alert.");
+
+      // Turn on motors + alarm
+      for (int i = 0; i < NUM_MOTORS; i++)
+        digitalWrite(MOTOR_PINS[i], HIGH);
+
+      digitalWrite(ALARM_PIN, HIGH);
+
+      delay(ALERT_DURATION);
+
+      // Turn everything off
+      for (int i = 0; i < NUM_MOTORS; i++)
+        digitalWrite(MOTOR_PINS[i], LOW);
+
+      digitalWrite(ALARM_PIN, LOW);
+
+      Serial.println("Alert finished. Waiting for person to stand up…");
+
+      // Stay here until they stand
+      while (digitalRead(SEAT_PIN) == HIGH)
+        delay(100);
+
+      Serial.println("Seat unoccupied — resetting.");
+      break;  // reset cycle
+    }
+
+    delay(100);
+  }
+
+  // Loop restarts waiting for next sitting event
+}
+
+// ---------------------------------------------------------
