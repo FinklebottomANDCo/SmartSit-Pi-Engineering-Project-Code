@@ -1,0 +1,202 @@
+// ---------------------------------------------------------
+// Pin Definitions
+// ---------------------------------------------------------
+
+// Analog seat sensors (both must be > ANALOG_THRESHOLD)
+const int SEAT_ANALOG_PINS[] = {36, 39};
+const int NUM_SEAT_SENSORS   = sizeof(SEAT_ANALOG_PINS) / sizeof(SEAT_ANALOG_PINS[0]);
+const int ANALOG_THRESHOLD   = 1000;      // "Both > 1000 then person is sitting"
+
+// Digital input (Mute)
+const int MUTE_PIN = 18;                  // HIGH = mute speaker
+
+// Digital outputs
+const int OUTPUT_PINS[] = {19, 23};       // motors / buzzers (always allowed)
+const int NUM_OUTPUTS   = sizeof(OUTPUT_PINS) / sizeof(OUTPUT_PINS[0]);
+
+const int SPEAKER_PIN   = 27;             // this one is affected by MUTE
+
+
+// ---------------------------------------------------------
+// Timings (tweak these as needed)
+// ---------------------------------------------------------
+
+const unsigned long SIT_THRESHOLD    = 10UL * 1000UL; // X: 25 minutes
+const unsigned long ALERT_DURATION   = 10UL * 1000UL;        // how long alarm runs
+const unsigned long COOLDOWN_WINDOW  = 5UL  * 1000UL; // Y: 5 minutes
+
+
+// ---------------------------------------------------------
+// State
+// ---------------------------------------------------------
+
+bool running           = true;
+bool inCooldown        = false;
+unsigned long cooldownStartTime = 0;
+
+
+// ---------------------------------------------------------
+// Helper functions
+// ---------------------------------------------------------
+
+// Read both analog sensors and decide if someone is sitting
+bool isSeatOccupied() {
+  for (int i = 0; i < NUM_SEAT_SENSORS; i++) {
+    int val = analogRead(SEAT_ANALOG_PINS[i]);
+    if (val <= ANALOG_THRESHOLD) {
+      return false;   // any sensor below threshold => not sitting
+    }
+  }
+  return true;        // all sensors above threshold => sitting
+}
+
+// Turn all outputs OFF
+void turnAllOutputsOff() {
+  for (int i = 0; i < NUM_OUTPUTS; i++) {
+    digitalWrite(OUTPUT_PINS[i], LOW);
+  }
+  digitalWrite(SPEAKER_PIN, LOW);
+}
+
+// Turn all outputs ON (respecting the MUTE input for speaker)
+void turnAllOutputsOn() {
+  for (int i = 0; i < NUM_OUTPUTS; i++) {
+    digitalWrite(OUTPUT_PINS[i], HIGH);
+  }
+
+  // Speaker obeys MUTE input
+  if (digitalRead(MUTE_PIN) == HIGH) {
+    digitalWrite(SPEAKER_PIN, LOW);   // muted
+  } else {
+    digitalWrite(SPEAKER_PIN, HIGH);  // allowed
+  }
+}
+
+// One-shot startup blip to show power is on
+void startupBeep() {
+  turnAllOutputsOn();
+  delay(300);            // short blip
+  turnAllOutputsOff();
+}
+
+// Alarm sequence: all outputs fire while person is still sitting,
+// or until ALERT_DURATION expires, whichever comes first.
+void triggerAlert() {
+  Serial.println("Triggering alert (all outputs fire).");
+
+  unsigned long start = millis();
+
+  while ((millis() - start) < ALERT_DURATION && isSeatOccupied()) {
+    turnAllOutputsOn();
+    delay(10);          // reduce CPU usage a bit
+  }
+
+  // STOP ALL Outputs when person stands or time ends
+  turnAllOutputsOff();
+  Serial.println("Alert finished.");
+}
+
+// ---------------------------------------------------------
+// Arduino setup
+// ---------------------------------------------------------
+void setup() {
+  Serial.begin(115200);
+
+  // Analog input pins (seat sensors)
+  for (int i = 0; i < NUM_SEAT_SENSORS; i++) {
+    pinMode(SEAT_ANALOG_PINS[i], INPUT);
+  }
+
+  // Digital input (Mute)
+  pinMode(MUTE_PIN, INPUT);   // change to INPUT_PULLUP if your circuit needs it
+
+  // Outputs
+  for (int i = 0; i < NUM_OUTPUTS; i++) {
+    pinMode(OUTPUT_PINS[i], OUTPUT);
+    digitalWrite(OUTPUT_PINS[i], LOW);
+  }
+  pinMode(SPEAKER_PIN, OUTPUT);
+  digitalWrite(SPEAKER_PIN, LOW);
+
+  Serial.println("System power-on. Playing startup blip.");
+  startupBeep();
+  Serial.println("System Ready.");
+}
+
+
+// ---------------------------------------------------------
+// Main loop
+// ---------------------------------------------------------
+void loop() {
+  if (!running) return;
+
+  // Expire cooldown window if needed
+  if (inCooldown && (millis() - cooldownStartTime > COOLDOWN_WINDOW)) {
+    inCooldown = false;
+  }
+
+  // -------- WAIT UNTIL SOMEONE SITS --------
+  Serial.println("Waiting for someone to sit...");
+
+  while (!isSeatOccupied()) {
+    // also keep checking if cooldown should expire
+    if (inCooldown && (millis() - cooldownStartTime > COOLDOWN_WINDOW)) {
+      inCooldown = false;
+    }
+    delay(100);
+  }
+
+  Serial.println("Seat occupied.");
+
+  // If within cooldown window, instantly trigger alarm
+  if (inCooldown) {
+    Serial.println("Within cooldown window -> instant alarm.");
+    triggerAlert();
+
+    // Now wait until person stands up
+    Serial.println("Waiting for person to stand after instant alarm...");
+    while (isSeatOccupied()) {
+      delay(100);
+    }
+
+    // Start (or refresh) cooldown
+    inCooldown = true;
+    cooldownStartTime = millis();
+    Serial.println("Seat unoccupied — cooldown restarted.");
+    return;   // restart loop
+  }
+
+  // -------- NORMAL TIMED SEAT LOGIC --------
+  Serial.println("Starting sit timer.");
+  unsigned long sitStartTime = millis();
+
+  while (isSeatOccupied()) {
+    unsigned long elapsed = millis() - sitStartTime;
+
+    if (elapsed >= SIT_THRESHOLD) {
+      Serial.println("Sit threshold exceeded -> alarm.");
+      triggerAlert();
+
+      // Wait for person to stand up
+      Serial.println("Waiting for person to stand after alarm...");
+      while (isSeatOccupied()) {
+        delay(100);
+      }
+
+      // Start cooldown window
+      inCooldown = true;
+      cooldownStartTime = millis();
+      Serial.println("Seat unoccupied — cooldown started.");
+      break;
+    }
+
+    delay(100);
+  }
+
+  // If they stood up before SIT_THRESHOLD, make sure everything is off
+  if (!isSeatOccupied()) {
+    turnAllOutputsOff();
+  }
+
+  // Loop restarts waiting for next sitting event
+}
